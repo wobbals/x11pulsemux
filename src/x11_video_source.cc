@@ -153,6 +153,7 @@ int x11_start(struct x11_s* pthis, struct x11_grab_config_s* config) {
   }
   AVDictionary *opts = NULL;
   av_dict_set(&opts, "video_size", "2560x1440", 0);
+  av_dict_set(&opts, "framerate", "20", 0);
   ret = avformat_open_input(&pthis->format_context, config->device_name,
                             pthis->input_format, &opts);
   av_dict_free(&opts);
@@ -241,9 +242,12 @@ double x11_get_initial_ts(struct x11_s* pthis) {
   (double)pthis->stream->time_base.den;
 }
 
+int64_t x11_get_first_pts(struct x11_s* pthis) {
+  return pthis->stream->start_time;
+}
+
 double x11_convert_pts(struct x11_s* pthis, int64_t pts) {
   double result = pts;
-  result -= pthis->stream->start_time;
   AVRational time_base = pthis->stream->time_base;
   result *= time_base.num;
   result /= time_base.den;

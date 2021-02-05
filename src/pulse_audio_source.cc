@@ -9,6 +9,7 @@ extern "C" {
 #include <assert.h>
 #include <libavformat/avformat.h>
 #include <libavdevice/avdevice.h>
+#include <libavutil/audio_fifo.h>
 #include <uv.h>
 #include "pulse_audio_source.h"
 #include "resampler.h"
@@ -16,6 +17,7 @@ extern "C" {
 }
 
 #include <queue>
+#include <map>
 
 // Workaround C++ issue with ffmpeg macro
 #ifndef __clang__
@@ -44,49 +46,46 @@ struct pulse_s {
   void (*on_audio_data)(struct pulse_s* pulse, void* p);
   void* audio_data_cb_p;
 
+  std::map<int64_t, AVFrame*> frame_map;
+  AVAudioFifo* sample_fifo;
+
+  int64_t buffer_pts;
 };
+
+static int min_buffered_frames = 10;
 
 static int pulse_worker_read_frame(struct pulse_s* pthis, AVFrame** frame_out) {
   int ret, got_frame = 0;
   AVPacket packet = { 0 };
   *frame_out = NULL;
 
-  /* pump packet reader until fifo is populated, or file ends */
-  while (!got_frame) {
-    ret = av_read_frame(pthis->format_context, &packet);
-    if (ret < 0) {
-      printf("%s\n", av_err2str(ret));
-      return ret;
-    }
-
-    AVFrame* frame = av_frame_alloc();
-    got_frame = 0;
-    if (packet.stream_index == pthis->stream_index)
-    {
-      ret = avcodec_decode_audio4(pthis->codec_context, frame,
-                                  &got_frame, &packet);
-      if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Error decoding audio: %s\n",
-               av_err2str(ret));
-      }
-
-      if (got_frame) {
-        frame->pts = av_frame_get_best_effort_timestamp(frame);
-        printf("audio source: extracted %lld (diff %lld) n_samples=%d\n",
-               frame->pts, frame->pts - pthis->last_pts_read,
-               frame->nb_samples);
-        pthis->last_pts_read = frame->pts;
-        *frame_out = frame;
-      }
-    } else {
-      av_frame_free(&frame);
-    }
-
-    av_packet_unref(&packet);
+  ret = av_read_frame(pthis->format_context, &packet);
+  if (ret) {
+    printf("pulse_worker_read_frame: err=%s\n", av_err2str(ret));
+    return ret;
+  }
+  if (packet.stream_index != pthis->stream_index) {
+    return AVERROR(EAGAIN);
   }
 
-  return !got_frame;
-
+  ret = avcodec_send_packet(pthis->codec_context, &packet);
+  av_packet_unref(&packet);
+  if (ret) {
+    printf("pulse_worker_read_frame decode error=%s\n", av_err2str(ret));
+    return ret;
+  }
+  AVFrame* frame = av_frame_alloc();
+  ret = avcodec_receive_frame(pthis->codec_context, frame);
+  if (!ret) {
+    printf("pulse_audio_src: extracted  %lld (diff %lld) nb_samples=%d\n",
+           frame->pts, frame->pts - pthis->last_pts_read,
+           frame->nb_samples);
+    pthis->last_pts_read = frame->pts;
+    *frame_out = frame;
+  } else {
+    av_frame_free(&frame);
+  }
+  return ret;
 }
 
 static void pulse_worker_main(void* p) {
@@ -100,16 +99,54 @@ static void pulse_worker_main(void* p) {
     if (ret || !frame) {
       continue;
     }
-    ret = resampler_convert(pthis->resampler, frame, &resampled_frame);
-    av_frame_free(&frame);
-    if (!ret) {
-      uv_mutex_lock(&pthis->queue_lock);
-      pthis->queue.push(resampled_frame);
-      uv_mutex_unlock(&pthis->queue_lock);
-      if (pthis->on_audio_data) {
-        pthis->on_audio_data(pthis, pthis->audio_data_cb_p);
-      }
+    // pulse frames are not always linear; push to a heap and pop once enough
+    // buffers have passed that we are confident we won't see another out of
+    // order insertion later on.
+    pthis->frame_map[frame->pts] = frame;
+
+    if (pthis->frame_map.size() < min_buffered_frames) {
+      continue;
     }
+    frame = pthis->frame_map.begin()->second;
+    pthis->frame_map.erase(frame->pts);
+    ret = av_audio_fifo_write(pthis->sample_fifo,
+                        (void**)frame->data,
+                        frame->nb_samples);
+    av_frame_free(&frame);
+
+    int read_samples = 1024; // todo: import from downstream encoder frame_size
+    while (av_audio_fifo_size(pthis->sample_fifo) > read_samples) {
+      frame = av_frame_alloc();
+      frame->nb_samples = read_samples;
+      frame->format = pthis->codec_context->sample_fmt;
+      frame->channel_layout = pthis->codec_context->channel_layout;
+      frame->sample_rate = pthis->codec_context->sample_rate;
+      frame->pts = pthis->buffer_pts + pthis->stream->start_time;
+      AVRational time_base = pthis->stream->time_base;
+      int64_t frame_length = time_base.den;
+      frame_length *= read_samples;
+      frame_length /= pthis->codec_context->sample_rate;
+      frame_length /= time_base.num;
+      pthis->buffer_pts += frame_length;
+      ret = av_frame_get_buffer(frame, 0);
+      assert(ret == 0);
+      ret = av_audio_fifo_read(pthis->sample_fifo,
+                               (void**)frame->data,
+                               read_samples);
+
+      ret = resampler_convert(pthis->resampler, frame, &resampled_frame);
+      av_frame_free(&frame);
+      if (!ret) {
+        uv_mutex_lock(&pthis->queue_lock);
+        pthis->queue.push(resampled_frame);
+        uv_mutex_unlock(&pthis->queue_lock);
+        if (pthis->on_audio_data) {
+          pthis->on_audio_data(pthis, pthis->audio_data_cb_p);
+        }
+      }
+
+    }
+
   }
 }
 
@@ -117,6 +154,7 @@ void pulse_alloc(struct pulse_s** pulse_out) {
   struct pulse_s* pthis = (struct pulse_s*) calloc(1, sizeof(struct pulse_s));
   uv_mutex_init(&pthis->queue_lock);
   pthis->queue = std::queue<AVFrame*>();
+  pthis->frame_map = std::map<int64_t, AVFrame*>();
   pthis->is_interrupted = 0;
   resampler_alloc(&pthis->resampler);
   *pulse_out = pthis;
@@ -209,6 +247,13 @@ int pulse_start(struct pulse_s* pthis) {
     av_log(NULL, AV_LOG_ERROR, "Cannot open audio decoder\n");
   }
 
+  // reorder samples in a fifo by holding on to nonlinear frames as they are
+  // read from the device.
+  pthis->sample_fifo =
+  av_audio_fifo_alloc(pthis->codec_context->sample_fmt,
+                      pthis->codec_context->channels,
+                      pthis->codec_context->sample_rate * min_buffered_frames);
+
   struct resampler_config_s config;
   config.channel_layout_in = pthis->codec_context->channel_layout;
   config.channel_layout_in = AV_CH_LAYOUT_STEREO;
@@ -258,21 +303,17 @@ int pulse_get_next(struct pulse_s* pthis, AVFrame** frame_out) {
   }
   uv_mutex_unlock(&pthis->queue_lock);
   *frame_out = frame;
+  printf("pulse_audio_src: pop frame pts=%lld\n", frame->pts);
   return ret;
 }
 
-double pulse_get_initial_ts(struct pulse_s* pthis) {
-  return (double)pthis->stream->start_time /
-  (double)pthis->stream->time_base.den;
+int64_t pulse_get_first_pts(struct pulse_s* pthis) {
+  return pthis->stream->start_time;
 }
 
 double pulse_convert_frame_pts(struct pulse_s* pthis, int64_t from_pts) {
-  double pts = from_pts;
-  pts /= (double)pthis->stream->time_base.den;
-  pts -= pulse_get_initial_ts(pthis);
+  AVRational time_base = pthis->stream->time_base;
+  double pts = from_pts * time_base.num;
+  pts /= (double)time_base.den;
   return pts;
-}
-
-AVRational pulse_get_time_base(struct pulse_s* pthis) {
-  return pthis->stream->time_base;
 }

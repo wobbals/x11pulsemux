@@ -463,6 +463,10 @@ static int open_output_file(struct file_writer_t* file_writer,
                "preset", "ultrafast", 0);
     av_opt_set(file_writer->video_ctx_out->priv_data,
                "crf", "18", 0);
+//    av_opt_set(file_writer->video_ctx_out->priv_data,
+//               "profile", "baseline", 0);
+    file_writer->video_ctx_out->profile = FF_PROFILE_H264_BASELINE;
+    file_writer->video_ctx_out->pix_fmt = AV_PIX_FMT_YUV420P;
   }
   
   /* Some formats want stream headers to be separate. */
@@ -508,7 +512,7 @@ static int safe_write_packet(struct file_writer_t* file_writer,
   return ret;
 }
 
-static int write_audio_frame(struct file_writer_t* file_writer,
+static int write_audio_frame(struct file_writer_t* pthis,
                              AVFrame* frame)
 {
   int got_packet, ret;
@@ -516,7 +520,7 @@ static int write_audio_frame(struct file_writer_t* file_writer,
   av_init_packet(&pkt);
   
   /* encode the frame */
-  ret = avcodec_encode_audio2(file_writer->audio_ctx_out,
+  ret = avcodec_encode_audio2(pthis->audio_ctx_out,
                               &pkt, frame, &got_packet);
   if (ret < 0) {
     fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
@@ -525,34 +529,42 @@ static int write_audio_frame(struct file_writer_t* file_writer,
   
   if (got_packet) {
     /* rescale output packet timestamp values from codec to stream timebase */
-    av_packet_rescale_ts(&pkt, file_writer->audio_ctx_out->time_base,
-                         file_writer->audio_stream->time_base);
-    pkt.stream_index = file_writer->audio_stream->index;
+//    av_packet_rescale_ts(&pkt, file_writer->audio_ctx_out->time_base,
+//                         file_writer->audio_stream->time_base);
+    pkt.stream_index = pthis->audio_stream->index;
     
     /* Write the compressed frame to the media file. */
     printf("file writer: Write audio frame %lld, size=%d pts=%lld "
            "duration=%lld\n",
-           file_writer->audio_frame_ct, pkt.size, pkt.pts, pkt.duration);
-    file_writer->audio_frame_ct++;
-    ret = safe_write_packet(file_writer, &pkt);
+           pthis->audio_frame_ct, pkt.size, pkt.pts, pkt.duration);
+    pthis->audio_frame_ct++;
+    ret = safe_write_packet(pthis, &pkt);
     if (ret) {
       printf("tilt");
     }
   } else {
     ret = 0;
   }
-  av_free_packet(&pkt);
+  av_packet_unref(&pkt);
   return ret;
 }
 
 // inserts audio frame into filtergraph
-int file_writer_push_audio_frame(struct file_writer_t* file_writer,
-                                 AVFrame* frame)
+int file_writer_push_audio_frame(struct file_writer_t* pthis,
+                                 AVFrame* frame, double timestamp)
 {
-  printf("file writer: push audio pts %lld\n", frame->pts);
+  printf("file writer: audio_frame ts=%.02f nb_samples=%d\n",
+         timestamp, frame->nb_samples);
+
+  // represent the global timestamp in the destination stream's timebase.
+  AVRational time_base = pthis->audio_stream->time_base;
+  int64_t frame_pts = timestamp * time_base.den;
+  frame_pts /= time_base.num;
+  frame->pts = frame_pts;
+
   int ret;
   AVFrame *filt_frame = av_frame_alloc();
-  ret = av_buffersrc_add_frame_flags(file_writer->audio_buffersrc_ctx,
+  ret = av_buffersrc_add_frame_flags(pthis->audio_buffersrc_ctx,
                                      frame, 0);
   if (ret < 0) {
     av_log(NULL, AV_LOG_ERROR, "Error while feeding the audio filtergraph\n");
@@ -560,12 +572,12 @@ int file_writer_push_audio_frame(struct file_writer_t* file_writer,
   
   /* pull filtered audio from the filtergraph */
   while (0 == ret) {
-    ret = av_buffersink_get_frame(file_writer->audio_buffersink_ctx,
+    ret = av_buffersink_get_frame(pthis->audio_buffersink_ctx,
                                   filt_frame);
     if (ret < 0) {
       break;
     }
-    ret = write_audio_frame(file_writer, filt_frame);
+    ret = write_audio_frame(pthis, filt_frame);
     av_frame_unref(filt_frame);
   }
   av_frame_free(&filt_frame);
@@ -591,8 +603,8 @@ static int write_video_frame(struct file_writer_t* file_writer,
     /*
      rescale output packet timestamp values from codec to stream timebase
      */
-    av_packet_rescale_ts(&pkt, global_time_base,
-                         file_writer->video_stream->time_base);
+//    av_packet_rescale_ts(&pkt, global_time_base,
+//                         file_writer->video_stream->time_base);
     pkt.stream_index = file_writer->video_stream->index;
     
     /* Write the compressed frame to the media file. */
@@ -614,15 +626,22 @@ static int write_video_frame(struct file_writer_t* file_writer,
 }
 
 int file_writer_push_video_frame(struct file_writer_t* pthis,
-                                 AVFrame* frame)
+                                 AVFrame* frame, double timestamp)
 {
   int ret;
-  printf("file writer: video_frame pts=%lld, width=%d, height=%d\n",
-         frame->pts, frame->width, frame->height);
+  printf("file writer: video_frame ts=%.02f, width=%d, height=%d\n",
+         timestamp, frame->width, frame->height);
+
+  // Translate global timestamp to stream timebase.
+  AVRational time_base = pthis->video_stream->time_base;
+  int64_t frame_pts = timestamp * time_base.den;
+  frame_pts /= time_base.num;
+  frame->pts = frame_pts;
 
   ret = av_buffersrc_add_frame_flags(pthis->video_buffersrc_ctx,
                                      frame,
                                      AV_BUFFERSRC_FLAG_KEEP_REF);
+  av_frame_free(&frame);
   AVFrame *filt_frame = av_frame_alloc();
   
   /* push the output frame into the filtergraph */

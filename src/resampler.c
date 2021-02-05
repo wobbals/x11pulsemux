@@ -95,7 +95,7 @@ int resampler_convert(struct resampler_s* pthis, AVFrame* frame_in,
   if (ret) {
     printf("resmpler: Cannot get output buffer\n");
   }
-//  ret = swr_config_frame(pthis->swr_ctx, output, frame_in);
+  ret = swr_config_frame(pthis->swr_ctx, output, frame_in);
 //  if (ret) {
 //    printf("resampler: reconfig %s\n", av_err2str(ret));
 //  }

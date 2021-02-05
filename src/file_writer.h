@@ -46,9 +46,9 @@ int file_writer_open(struct file_writer_t* writer,
                      const char* filename,
                      int out_width, int out_height);
 int file_writer_push_audio_frame(struct file_writer_t* file_writer,
-                                 AVFrame* frame);
+                                 AVFrame* frame, double timestamp);
 int file_writer_push_video_frame(struct file_writer_t* file_writer,
-                                 AVFrame* frame);
+                                 AVFrame* frame, double timestamp);
 int file_writer_close(struct file_writer_t* writer);
 
 #endif /* file_writer_h */

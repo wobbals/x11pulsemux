@@ -21,8 +21,7 @@ struct muxer_s {
   struct archive_mixer_s* mixer;
 };
 
-int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame,
-                 double initial_timestamp)
+int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame)
 {
   int ret, width, height;
   width = first_video_frame->width;
@@ -53,7 +52,7 @@ int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame,
 //    printf("ichabod: cannot build mixer\n");
 //    return ret;
 //  }
-  ret = pulse_start(pthis->pulse);
+//  ret = pulse_start(pthis->pulse);
   if (ret) {
     printf("failed to open pulse audio! ichabod will be silent.\n");
   }
@@ -73,13 +72,14 @@ void muxer_main(void* p) {
         printf("muxer_main: x11_get_next failed with %d\n", ret);
         continue;
       }
-      double timestamp = x11_convert_pts(pthis->x11grab, frame->pts);
       if (!pthis->file_writer) {
-        setup_outputs(pthis, frame, timestamp);
+        setup_outputs(pthis, frame);
         first_pts = frame->pts;
       }
-      frame->pts -= first_pts;
-      ret = file_writer_push_video_frame(pthis->file_writer, frame);
+      int64_t adjusted_pts = frame->pts;
+      adjusted_pts -= first_pts;
+      double timestamp = x11_convert_pts(pthis->x11grab, adjusted_pts);
+      ret = file_writer_push_video_frame(pthis->file_writer, frame, timestamp);
       if (ret) {
         printf("muxer_main: file_writer_push_video_frame failed with %d\n",
                ret);
@@ -93,8 +93,10 @@ void muxer_main(void* p) {
       if (ret) {
         continue;
       }
-      frame->pts -= first_pts;
-      ret = file_writer_push_audio_frame(pthis->file_writer, frame);
+      int64_t adjusted_pts = frame->pts;
+      adjusted_pts -= first_pts;
+      double timestamp = x11_convert_pts(pthis->x11grab, adjusted_pts);
+      ret = file_writer_push_audio_frame(pthis->file_writer, frame, timestamp);
       if (ret && ret != AVERROR(EAGAIN)) {
         printf("muxer_main: file_writer_push_audio_frame failed with %d\n",
                ret);
