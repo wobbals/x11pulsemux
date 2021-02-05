@@ -10,12 +10,18 @@
 
 #include <libavutil/frame.h>
 
+struct x11_grab_config_s {
+  const char* device_name;
+  int width;
+  int height;
+};
+
 struct x11_s;
 
 void x11_alloc(struct x11_s** x11_out);
 void x11_free(struct x11_s* x11);
 
-int x11_start(struct x11_s* x11);
+int x11_start(struct x11_s* x11, struct x11_grab_config_s* config);
 int x11_stop(struct x11_s* x11);
 
 char x11_has_next(struct x11_s* x11);

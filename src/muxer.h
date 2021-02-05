@@ -3,6 +3,7 @@ struct muxer_s;
 
 struct muxer_config_s {
   const char* outfile_path;
+  const char* device_name;
 };
 
 // invoke before opening the first muxer.

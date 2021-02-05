@@ -14,29 +14,29 @@
 #include <uv.h>
 
 struct file_writer_t {
-    int out_width;
-    int out_height;
-
-    /* stream filtering */
-    AVFilterContext *audio_buffersink_ctx;
-    AVFilterContext *audio_buffersrc_ctx;
-    AVFilterContext *video_buffersink_ctx;
-    AVFilterContext *video_buffersrc_ctx;
-    AVFilterGraph *video_filter_graph;
-    AVFilterGraph *audio_filter_graph;
-
-    /* container codec configuration */
-    AVCodec* video_codec_out;
-    AVCodec* audio_codec_out;
-    AVCodecContext* video_ctx_out;
-    AVCodecContext* audio_ctx_out;
-    AVFormatContext* format_ctx_out;
-    AVStream* video_stream;
-    AVStream* audio_stream;
-    int64_t video_frame_ct;
-    int64_t audio_frame_ct;
-
-    uv_mutex_t write_lock;
+  int out_width;
+  int out_height;
+  
+  /* stream filtering */
+  AVFilterContext *audio_buffersink_ctx;
+  AVFilterContext *audio_buffersrc_ctx;
+  AVFilterContext *video_buffersink_ctx;
+  AVFilterContext *video_buffersrc_ctx;
+  AVFilterGraph *video_filter_graph;
+  AVFilterGraph *audio_filter_graph;
+  
+  /* container codec configuration */
+  AVCodec* video_codec_out;
+  AVCodec* audio_codec_out;
+  AVCodecContext* video_ctx_out;
+  AVCodecContext* audio_ctx_out;
+  AVFormatContext* format_ctx_out;
+  AVStream* video_stream;
+  AVStream* audio_stream;
+  int64_t video_frame_ct;
+  int64_t audio_frame_ct;
+  
+  uv_mutex_t write_lock;
 };
 
 int file_writer_alloc(struct file_writer_t** writer);

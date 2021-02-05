@@ -13,6 +13,12 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavdevice/avdevice.h>
 #include <libavformat/avformat.h>
+#include <libavutil/frame.h>
+#include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/imgutils.h>
+#include <signal.h>
 #include "x11_video_source.h"
 
 }
@@ -36,6 +42,7 @@ struct x11_s {
   AVFormatContext* format_context;
   AVCodecContext* codec_context;
   AVCodec* codec;
+  struct SwsContext* sws_ctx;
   int stream_index;
   AVStream* stream;
   int64_t last_pts_read;
@@ -89,6 +96,35 @@ static int _read_frame(struct x11_s* pthis, AVFrame** frame_out) {
   return !have_frame;
 }
 
+AVFrame* _convert_frame(struct x11_s* pthis, AVFrame* frame) {
+  int ret;
+  pthis->sws_ctx = sws_getCachedContext(pthis->sws_ctx,
+                                        frame->width, frame->height,
+                                        (enum AVPixelFormat) frame->format,
+                                        frame->width, frame->height,
+                                        AV_PIX_FMT_YUV420P,
+                                        SWS_FAST_BILINEAR,
+                                        NULL, NULL, NULL);
+
+  AVFrame* converted_frame = av_frame_alloc();
+  ret = av_image_alloc(converted_frame->data, converted_frame->linesize,
+                       frame->width, frame->height, AV_PIX_FMT_YUV420P, 16);
+
+  converted_frame->width = frame->width;
+  converted_frame->height = frame->height;
+  converted_frame->format = AV_PIX_FMT_YUV420P;
+  converted_frame->pict_type = frame->pict_type;
+  converted_frame->key_frame = frame->key_frame;
+  converted_frame->pts = frame->pts;
+  converted_frame->pkt_dts = frame->pkt_dts;
+  converted_frame->pkt_duration = frame->pkt_duration;
+
+  sws_scale(pthis->sws_ctx, frame->data, frame->linesize, 0,
+            frame->height, converted_frame->data, converted_frame->linesize);
+  av_frame_free(&frame);
+  return converted_frame;
+}
+
 void x11grab_main(void* p) {
   int ret;
   AVFrame* frame = NULL;
@@ -99,6 +135,7 @@ void x11grab_main(void* p) {
       continue;
     }
     if (!ret) {
+      frame = _convert_frame(pthis, frame);
       uv_mutex_lock(&pthis->queue_lock);
       pthis->queue.push(frame);
       uv_mutex_unlock(&pthis->queue_lock);
@@ -107,17 +144,19 @@ void x11grab_main(void* p) {
   }
 }
 
-int x11_start(struct x11_s* pthis) {
+int x11_start(struct x11_s* pthis, struct x11_grab_config_s* config) {
   int ret;
   pthis->input_format = av_find_input_format("x11grab");
   if (!pthis->input_format) {
     printf("x11_start: x11grab input device not found\n");
     return -1;
   }
-  const char* input_device = ":0.0";
+  AVDictionary *opts = NULL;
+  av_dict_set(&opts, "video_size", "2560x1440", 0);
+  ret = avformat_open_input(&pthis->format_context, config->device_name,
+                            pthis->input_format, &opts);
+  av_dict_free(&opts);
 
-  ret = avformat_open_input(&pthis->format_context, input_device,
-                            pthis->input_format, NULL);
   if (ret) {
     printf("failed to open input %s\n", pthis->input_format->name);
     return ret;
@@ -128,7 +167,7 @@ int x11_start(struct x11_s* pthis) {
     printf("Could not find stream information\n");
     return ret;
   }
-
+  
   ret = av_find_best_stream(pthis->format_context,
                             AVMEDIA_TYPE_VIDEO,
                             -1, -1,
@@ -145,25 +184,25 @@ int x11_start(struct x11_s* pthis) {
     printf("Failed to find audio codec\n");
     return AVERROR(EINVAL);
   }
-
+  
   // Allocate a codec context for the decoder
   pthis->codec_context = avcodec_alloc_context3(pthis->codec);
-
+  
   ret = avcodec_parameters_to_context(pthis->codec_context,
                                       pthis->stream->codecpar);
   if (ret < 0) {
     printf("Failed to copy stream codec parameters to codec context\n");
     return ret;
   }
-
+  
   av_opt_set_int(pthis->codec_context, "refcounted_frames", 1, 0);
-
+  
   /* init the decoder */
   ret = avcodec_open2(pthis->codec_context, pthis->codec, NULL);
   if (ret < 0) {
     av_log(NULL, AV_LOG_ERROR, "x11_open: cannot open video decoder\n");
   }
-
+  
   pthis->interrupted = 0;
   return uv_thread_create(&pthis->worker_thread, x11grab_main, pthis);
 }

@@ -12,8 +12,9 @@
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
-#include <libavutil/opt.h>
 #include <libavutil/audio_fifo.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libswresample/swresample.h>
 #include <assert.h>
 
@@ -60,6 +61,8 @@ int file_writer_open(struct file_writer_t* file_writer,
                      const char* filename,
                      int out_width, int out_height)
 {
+  printf("file_writer_open: width=%d, height=%d filename=%s\n",
+         out_width, out_height, filename);
   int ret;
   file_writer->out_height = out_height;
   file_writer->out_width = out_width;
@@ -439,7 +442,7 @@ static int open_output_file(struct file_writer_t* file_writer,
   file_writer->audio_stream->time_base.den = out_sample_rate;
   
   // Codec configuration
-  file_writer->audio_ctx_out->bit_rate = 128000;
+  file_writer->audio_ctx_out->bit_rate = 192000;
   file_writer->audio_ctx_out->sample_fmt = out_audio_format;
   file_writer->audio_ctx_out->sample_rate = out_sample_rate;
   file_writer->audio_ctx_out->channels = 2;
@@ -610,12 +613,16 @@ static int write_video_frame(struct file_writer_t* file_writer,
   return ret;
 }
 
-int file_writer_push_video_frame(struct file_writer_t* file_writer,
+int file_writer_push_video_frame(struct file_writer_t* pthis,
                                  AVFrame* frame)
 {
-  printf("file writer: push video pts %lld\n", frame->pts);
-  int ret = av_buffersrc_add_frame_flags(file_writer->video_buffersrc_ctx,
-                                         frame, AV_BUFFERSRC_FLAG_KEEP_REF);
+  int ret;
+  printf("file writer: video_frame pts=%lld, width=%d, height=%d\n",
+         frame->pts, frame->width, frame->height);
+
+  ret = av_buffersrc_add_frame_flags(pthis->video_buffersrc_ctx,
+                                     frame,
+                                     AV_BUFFERSRC_FLAG_KEEP_REF);
   AVFrame *filt_frame = av_frame_alloc();
   
   /* push the output frame into the filtergraph */
@@ -628,7 +635,7 @@ int file_writer_push_video_frame(struct file_writer_t* file_writer,
   
   /* pull filtered frames from the filtergraph */
   while (1) {
-    ret = av_buffersink_get_frame(file_writer->video_buffersink_ctx,
+    ret = av_buffersink_get_frame(pthis->video_buffersink_ctx,
                                   filt_frame);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
       ret = 0;
@@ -637,7 +644,7 @@ int file_writer_push_video_frame(struct file_writer_t* file_writer,
     if (ret < 0) {
       goto end;
     }
-    write_video_frame(file_writer, filt_frame);
+    write_video_frame(pthis, filt_frame);
     av_frame_unref(filt_frame);
   }
 end:

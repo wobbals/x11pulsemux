@@ -1,8 +1,9 @@
 
-#include <uv.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavdevice/avdevice.h>
+#include <signal.h>
+#include <uv.h>
 #include "pulse_audio_source.h"
 #include "x11_video_source.h"
 #include "file_writer.h"
@@ -11,6 +12,7 @@
 
 struct muxer_s {
   char* outfile_path;
+  char* device_name;
   uv_thread_t worker_thread;
   volatile sig_atomic_t interrupted;
   struct pulse_s* pulse;
@@ -72,7 +74,7 @@ void muxer_main(void* p) {
         continue;
       }
       double timestamp = x11_convert_pts(pthis->x11grab, frame->pts);
-      if (!pthis->mixer) {
+      if (!pthis->file_writer) {
         setup_outputs(pthis, frame, timestamp);
         first_pts = frame->pts;
       }
@@ -85,7 +87,7 @@ void muxer_main(void* p) {
     }
     
     // wait till we have written a video frame before reading from pulse.
-    while (pthis->mixer && pulse_has_next(pthis->pulse)) {
+    while (pulse_has_next(pthis->pulse)) {
       AVFrame* frame = NULL;
       ret = pulse_get_next(pthis->pulse, &frame);
       if (ret) {
@@ -93,7 +95,7 @@ void muxer_main(void* p) {
       }
       frame->pts -= first_pts;
       ret = file_writer_push_audio_frame(pthis->file_writer, frame);
-      if (ret) {
+      if (ret && ret != AVERROR(EAGAIN)) {
         printf("muxer_main: file_writer_push_audio_frame failed with %d\n",
                ret);
       }
@@ -126,10 +128,17 @@ void muxer_initialize() {
 int muxer_open(struct muxer_s** muxer, struct muxer_config_s* config) {
   struct muxer_s* pthis = (struct muxer_s*)calloc(1, sizeof(struct muxer_s));
   pthis->outfile_path = calloc(strlen(config->outfile_path) + 1, 1);
+  pthis->device_name = calloc(strlen(config->device_name) + 1, 1);
   strcpy(pthis->outfile_path, config->outfile_path);
+  strcat(pthis->device_name, config->device_name);
   int ret;
   x11_alloc(&pthis->x11grab);
-  ret = x11_start(pthis->x11grab);
+  struct x11_grab_config_s x11_config = { 0 };
+  x11_config.device_name = config->device_name;
+  // oops wire this up to the cli
+  x11_config.width = 2560;
+  x11_config.height = 1440;
+  ret = x11_start(pthis->x11grab, &x11_config);
   if (ret) {
     printf("x11_start failed with %d\n", ret);
     return ret;
