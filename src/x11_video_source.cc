@@ -88,6 +88,7 @@ static int _read_frame(struct x11_s* pthis, AVFrame** frame_out) {
         *frame_out = frame;
         have_frame = 1;
       } else if (ret != AVERROR(EAGAIN)) {
+        av_frame_free(&frame);
         return ret;
       }
     }
@@ -96,6 +97,8 @@ static int _read_frame(struct x11_s* pthis, AVFrame** frame_out) {
   return !have_frame;
 }
 
+
+// Converts RGB frame to YUV before passing downstream.
 AVFrame* _convert_frame(struct x11_s* pthis, AVFrame* frame) {
   int ret;
   pthis->sws_ctx = sws_getCachedContext(pthis->sws_ctx,
@@ -107,8 +110,8 @@ AVFrame* _convert_frame(struct x11_s* pthis, AVFrame* frame) {
                                         NULL, NULL, NULL);
 
   AVFrame* converted_frame = av_frame_alloc();
-  ret = av_image_alloc(converted_frame->data, converted_frame->linesize,
-                       frame->width, frame->height, AV_PIX_FMT_YUV420P, 16);
+//  ret = av_image_alloc(converted_frame->data, converted_frame->linesize,
+//                       frame->width, frame->height, AV_PIX_FMT_YUV420P, 16);
 
   converted_frame->width = frame->width;
   converted_frame->height = frame->height;
@@ -118,6 +121,10 @@ AVFrame* _convert_frame(struct x11_s* pthis, AVFrame* frame) {
   converted_frame->pts = frame->pts;
   converted_frame->pkt_dts = frame->pkt_dts;
   converted_frame->pkt_duration = frame->pkt_duration;
+  // fun fact about av_image_alloc: the references on underlying buffers do not
+  // get passed along. av_image_fill_arrays does the right thing and keeps
+  // av_frame_free on this frame working as expected.
+  ret = av_frame_get_buffer(converted_frame, 16);
 
   sws_scale(pthis->sws_ctx, frame->data, frame->linesize, 0,
             frame->height, converted_frame->data, converted_frame->linesize);
@@ -153,7 +160,7 @@ int x11_start(struct x11_s* pthis, struct x11_grab_config_s* config) {
   }
   AVDictionary *opts = NULL;
   av_dict_set(&opts, "video_size", "2560x1440", 0);
-  av_dict_set(&opts, "framerate", "20", 0);
+  av_dict_set(&opts, "framerate", "ntsc", 0);
   ret = avformat_open_input(&pthis->format_context, config->device_name,
                             pthis->input_format, &opts);
   av_dict_free(&opts);

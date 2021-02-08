@@ -408,13 +408,13 @@ static int open_output_file(struct file_writer_t* file_writer,
   }
   
   /* find the video encoder */
-  file_writer->video_codec_out = avcodec_find_encoder(fmt->video_codec);
+  file_writer->video_codec_out = avcodec_find_encoder(AV_CODEC_ID_H264);
   if (!file_writer->video_codec_out) {
     printf("Video codec not found\n");
     exit(1);
   }
   
-  file_writer->audio_codec_out = avcodec_find_encoder(fmt->audio_codec);
+  file_writer->audio_codec_out = avcodec_find_encoder(AV_CODEC_ID_AAC);
   if (!file_writer->audio_codec_out) {
     printf("Audio codec not found\n");
     exit(1);
@@ -540,7 +540,7 @@ static int write_audio_frame(struct file_writer_t* pthis,
     pthis->audio_frame_ct++;
     ret = safe_write_packet(pthis, &pkt);
     if (ret) {
-      printf("tilt");
+      printf("write_audio_frame: safe_write_packet failed with %d\n", ret);
     }
   } else {
     ret = 0;
@@ -613,7 +613,7 @@ static int write_video_frame(struct file_writer_t* file_writer,
     file_writer->video_frame_ct++;
     ret = safe_write_packet(file_writer, &pkt);
     if (ret) {
-      printf("tilt\n");
+      printf("write_video_frame: safe_write_packet failed with %d\n", ret);
     }
     
   } else {

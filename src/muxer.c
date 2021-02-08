@@ -52,7 +52,7 @@ int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame)
 //    printf("ichabod: cannot build mixer\n");
 //    return ret;
 //  }
-//  ret = pulse_start(pthis->pulse);
+  ret = pulse_start(pthis->pulse);
   if (ret) {
     printf("failed to open pulse audio! ichabod will be silent.\n");
   }
@@ -101,24 +101,8 @@ void muxer_main(void* p) {
         printf("muxer_main: file_writer_push_audio_frame failed with %d\n",
                ret);
       }
+      av_frame_free(&frame);
     }
-   
-//    while (pthis->mixer && archive_mixer_has_next(pthis->mixer)) {
-//      AVFrame* frame = NULL;
-//      enum AVMediaType kind;
-//      ret = archive_mixer_get_next(pthis->mixer, &frame, &kind);
-//      if (ret) {
-//        printf("muxer_main: archive_mixer_get_next failed with %d\n", ret);
-//        continue;
-//      }
-//      if (kind == AVMEDIA_TYPE_AUDIO) {
-//        file_writer_push_audio_frame(pthis->file_writer, frame);
-//      } else if (kind == AVMEDIA_TYPE_VIDEO) {
-//        file_writer_push_video_frame(pthis->file_writer, frame);
-//      } else {
-//        av_frame_free(&frame);
-//      }
-//    }
   }
   printf("muxer main: exit loop\n");
 }

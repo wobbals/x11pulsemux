@@ -109,6 +109,21 @@ static void pulse_worker_main(void* p) {
     }
     frame = pthis->frame_map.begin()->second;
     pthis->frame_map.erase(frame->pts);
+
+    // Clock will drift if we're relying on pulseaudio to produce the correct
+    // number of samples at the correct timestamps.
+    if (frame->pts > pthis->buffer_pts) {
+      // error adjustement
+      size_t samples_buffered = av_audio_fifo_size(pthis->sample_fifo);
+      AVRational time_base = pthis->stream->time_base;
+      int64_t error = samples_buffered * time_base.den;
+      error /= pthis->codec_context->sample_rate;
+      error *= time_base.num;
+      pthis->buffer_pts = frame->pts - error;
+      // disallow negative pts values.
+      pthis->buffer_pts = MAX(0, pthis->buffer_pts);
+    }
+
     ret = av_audio_fifo_write(pthis->sample_fifo,
                         (void**)frame->data,
                         frame->nb_samples);
@@ -121,7 +136,7 @@ static void pulse_worker_main(void* p) {
       frame->format = pthis->codec_context->sample_fmt;
       frame->channel_layout = pthis->codec_context->channel_layout;
       frame->sample_rate = pthis->codec_context->sample_rate;
-      frame->pts = pthis->buffer_pts + pthis->stream->start_time;
+      frame->pts = pthis->buffer_pts;
       AVRational time_base = pthis->stream->time_base;
       int64_t frame_length = time_base.den;
       frame_length *= read_samples;
