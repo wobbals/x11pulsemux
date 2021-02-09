@@ -322,8 +322,17 @@ int pulse_get_next(struct pulse_s* pthis, AVFrame** frame_out) {
   return ret;
 }
 
-int64_t pulse_get_first_pts(struct pulse_s* pthis) {
-  return pthis->stream->start_time;
+int64_t pulse_get_head_ts(struct pulse_s* pthis) {
+  int64_t ret;
+  uv_mutex_lock(&pthis->queue_lock);
+  if (pthis->queue.empty()) {
+    ret = EAGAIN;
+  } else {
+    AVFrame* frame = pthis->queue.front();
+    ret = frame->pts;
+  }
+  uv_mutex_unlock(&pthis->queue_lock);
+  return ret;
 }
 
 double pulse_convert_frame_pts(struct pulse_s* pthis, int64_t from_pts) {

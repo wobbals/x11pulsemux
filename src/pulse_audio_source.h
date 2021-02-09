@@ -31,7 +31,7 @@ char pulse_is_running(struct pulse_s* pulse);
 
 char pulse_has_next(struct pulse_s* pulse);
 int pulse_get_next(struct pulse_s* pulse, AVFrame** frame_out);
-int64_t pulse_get_first_pts(struct pulse_s* pulse);
+int64_t pulse_get_head_ts(struct pulse_s* pthis);
 double pulse_convert_pts(struct pulse_s* pulse, int64_t from_pts);
 
 #endif /* pulse_audio_source_h */

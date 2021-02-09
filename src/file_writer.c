@@ -526,13 +526,12 @@ static int write_audio_frame(struct file_writer_t* pthis,
     fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
     return 1;
   }
-  
   if (got_packet) {
     /* rescale output packet timestamp values from codec to stream timebase */
 //    av_packet_rescale_ts(&pkt, file_writer->audio_ctx_out->time_base,
 //                         file_writer->audio_stream->time_base);
     pkt.stream_index = pthis->audio_stream->index;
-    
+
     /* Write the compressed frame to the media file. */
     printf("file writer: Write audio frame %lld, size=%d pts=%lld "
            "duration=%lld\n",
@@ -606,7 +605,6 @@ static int write_video_frame(struct file_writer_t* file_writer,
 //    av_packet_rescale_ts(&pkt, global_time_base,
 //                         file_writer->video_stream->time_base);
     pkt.stream_index = file_writer->video_stream->index;
-    
     /* Write the compressed frame to the media file. */
     printf("file writer: Write video frame %lld, size=%d pts=%lld\n",
            file_writer->video_frame_ct, pkt.size, pkt.pts);

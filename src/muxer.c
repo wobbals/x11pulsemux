@@ -7,7 +7,6 @@
 #include "pulse_audio_source.h"
 #include "x11_video_source.h"
 #include "file_writer.h"
-#include "archive_mixer.h"
 #include "muxer.h"
 
 struct muxer_s {
@@ -19,6 +18,9 @@ struct muxer_s {
   struct x11_s* x11grab;
   struct file_writer_t* file_writer;
   struct archive_mixer_s* mixer;
+
+  char audio_up;
+  char video_up;
 };
 
 int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame)
@@ -36,23 +38,8 @@ int setup_outputs(struct muxer_s* pthis, AVFrame* first_video_frame)
     printf("file_writer_open failed with %d\n", ret);
     return ret;
   }
-  
-//  struct archive_mixer_config_s mixer_config;
-//  mixer_config.min_buffer_time = 2; // does this need to be configurable?
-//  mixer_config.video_fps_out = 30; // this too?
-//  mixer_config.audio_ctx_out = pthis->file_writer->audio_ctx_out;
-//  mixer_config.audio_stream_out = pthis->file_writer->audio_stream;
-//  mixer_config.format_out = pthis->file_writer->format_ctx_out;
-//  mixer_config.video_ctx_out = pthis->file_writer->video_ctx_out;
-//  mixer_config.video_stream_out = pthis->file_writer->video_stream;
-//  mixer_config.initial_timestamp = initial_timestamp;
-//  mixer_config.pulse_audio = pthis->pulse;
-//  ret = archive_mixer_create(&pthis->mixer, &mixer_config);
-//  if (ret) {
-//    printf("ichabod: cannot build mixer\n");
-//    return ret;
-//  }
-  ret = pulse_start(pthis->pulse);
+  // late start (see also muxer_open)
+//  ret = pulse_start(pthis->pulse);
   if (ret) {
     printf("failed to open pulse audio! ichabod will be silent.\n");
   }
@@ -65,7 +52,11 @@ void muxer_main(void* p) {
   printf("muxer main\n");
   int64_t first_pts = -1;
   while (!pthis->interrupted) {
-    while (x11_has_next(pthis->x11grab)) {
+    while (
+      !pthis->interrupted && x11_has_next(pthis->x11grab)
+      && x11_get_head_ts(pthis->x11grab) < pulse_get_head_ts(pthis->pulse)
+    ) {
+      pthis->video_up = 1;
       AVFrame* frame = NULL;
       ret = x11_get_next(pthis->x11grab, &frame);
       if (ret) {
@@ -74,6 +65,13 @@ void muxer_main(void* p) {
       }
       if (!pthis->file_writer) {
         setup_outputs(pthis, frame);
+      }
+      if (!pthis->audio_up) {
+        printf("muxer_main: skip x11 frame (wait for audio)\n");
+        av_frame_free(&frame);
+        continue;
+      }
+      if (first_pts < 0) {
         first_pts = frame->pts;
       }
       int64_t adjusted_pts = frame->pts;
@@ -86,12 +84,23 @@ void muxer_main(void* p) {
       }
     }
     
-    // wait till we have written a video frame before reading from pulse.
-    while (pulse_has_next(pthis->pulse)) {
+    while (
+      !pthis->interrupted && pulse_has_next(pthis->pulse)
+      && pulse_get_head_ts(pthis->pulse) < x11_get_head_ts(pthis->x11grab)
+    ) {
+      pthis->audio_up = 1;
       AVFrame* frame = NULL;
       ret = pulse_get_next(pthis->pulse, &frame);
       if (ret) {
         continue;
+      }
+      if (!pthis->video_up) {
+        printf("muxer_main: skip pulse frame (wait for video)\n");
+        av_frame_free(&frame);
+        continue;
+      }
+      if (first_pts < 0) {
+        first_pts = frame->pts;
       }
       int64_t adjusted_pts = frame->pts;
       adjusted_pts -= first_pts;
@@ -131,11 +140,11 @@ int muxer_open(struct muxer_s** muxer, struct muxer_config_s* config) {
   }
   
   pulse_alloc(&pthis->pulse);
-//  ret = pulse_start(pthis->pulse);
-//  if (ret) {
-//    printf("pulse_start failed with %d\n", ret);
-//    return ret;
-//  }
+  ret = pulse_start(pthis->pulse);
+  if (ret) {
+    printf("pulse_start failed with %d\n", ret);
+    return ret;
+  }
   pthis->interrupted = 0;
   ret = uv_thread_create(&pthis->worker_thread, muxer_main, pthis);
   if (!ret) {
@@ -162,6 +171,13 @@ int muxer_close(struct muxer_s* pthis) {
     return ret;
   }
   pulse_free(pthis->pulse);
+
+  ret = x11_stop(pthis->x11grab);
+  if (ret) {
+    printf("muxer_close: x11_stop failed with %d\n", ret);
+    return ret;
+  }
+  x11_free(pthis->x11grab);
 
   file_writer_free(pthis->file_writer);
   

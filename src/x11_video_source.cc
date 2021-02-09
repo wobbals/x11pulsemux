@@ -160,6 +160,7 @@ int x11_start(struct x11_s* pthis, struct x11_grab_config_s* config) {
   }
   AVDictionary *opts = NULL;
   av_dict_set(&opts, "video_size", "2560x1440", 0);
+  av_dict_set(&opts, "draw_mouse", "0", 0);
   av_dict_set(&opts, "framerate", "ntsc", 0);
   ret = avformat_open_input(&pthis->format_context, config->device_name,
                             pthis->input_format, &opts);
@@ -249,8 +250,17 @@ double x11_get_initial_ts(struct x11_s* pthis) {
   (double)pthis->stream->time_base.den;
 }
 
-int64_t x11_get_first_pts(struct x11_s* pthis) {
-  return pthis->stream->start_time;
+int64_t x11_get_head_ts(struct x11_s* pthis) {
+  int64_t ret;
+  uv_mutex_lock(&pthis->queue_lock);
+  if (pthis->queue.empty()) {
+    ret = EAGAIN;
+  } else {
+    AVFrame* frame = pthis->queue.front();
+    ret = frame->pts;
+  }
+  uv_mutex_unlock(&pthis->queue_lock);
+  return ret;
 }
 
 double x11_convert_pts(struct x11_s* pthis, int64_t pts) {

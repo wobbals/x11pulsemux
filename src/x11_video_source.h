@@ -26,7 +26,7 @@ int x11_stop(struct x11_s* x11);
 
 char x11_has_next(struct x11_s* x11);
 int x11_get_next(struct x11_s* x11, AVFrame** frame_out);
-int64_t x11_get_first_pts(struct x11_s* pthis);
+int64_t x11_get_head_ts(struct x11_s* pthis);
 double x11_convert_pts(struct x11_s* pthis, int64_t pts);
 
 #endif /* x11_video_source_h */
